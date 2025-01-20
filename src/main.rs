@@ -1,7 +1,7 @@
 use std::net::{Ipv4Addr, SocketAddr};
 
 use anyhow::Result;
-use axum::{http::StatusCode, routing::get, Router};
+use axum::{extract::State, http::StatusCode, routing::get, Router};
 use tokio::net::TcpListener;
 
 use sqlx::{postgres::PgConnectOptions, Database, PgPool};
@@ -17,7 +17,7 @@ struct DatabaseConfig {
 
 // アプリケーション用のDB設定構造体からPostgres接続用の構造体に変換
 impl From<DatabaseConfig> for PgConnectOptions {
-    fn from(cfg: DatabaseConfig) -> self {
+    fn from(cfg: DatabaseConfig) -> Self {
         Self::new()
             .host(&cfg.host)
             .port(cfg.port)
@@ -47,7 +47,11 @@ async fn main() -> Result<()> {
     };
     let conn_pool = connect_database_with(database_cfg);
 
-    let app = Router::new().route("/health", get(health_check));
+    let app = Router::new()
+        .route("/health", get(health_check))
+        .route("/health/db", get(health_check_db))
+        // ルータのStateにプールを登録、各ハンドラで利用できるように
+        .with_state(conn_pool);
     let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 8080);
     let listener = TcpListener::bind(addr).await?;
     println!("Listening on {}", addr);
@@ -57,5 +61,19 @@ async fn main() -> Result<()> {
 #[tokio::test]
 async fn health_check_works() {
     let status_code = health_check().await;
+    assert_eq!(status_code, StatusCode::OK);
+}
+
+async fn health_check_db(State(db): State<PgPool>) -> StatusCode {
+    let connection_result = sqlx::query("SELECT 1").fetch_one(&db).await;
+    match connection_result {
+        Ok(_) => StatusCode::OK,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+#[sqlx::test]
+async fn health_check_db_works(pool: sqlx::PgPool) {
+    let status_code = health_check_db(State(pool)).await;
     assert_eq!(status_code, StatusCode::OK);
 }
